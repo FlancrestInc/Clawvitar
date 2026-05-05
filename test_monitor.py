@@ -329,7 +329,8 @@ class MonitorTests(unittest.TestCase):
 
         self.assertIn("VENV_DIR=", installer)
         self.assertIn("python3 -m venv", installer)
-        self.assertIn('"${VENV_DIR}/bin/python" -m pip install', installer)
+        self.assertNotIn("requirements.txt", installer)
+        self.assertNotIn("pip install", installer)
         self.assertIn("ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/status_agent.py", service)
 
 

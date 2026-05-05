@@ -15,7 +15,7 @@ VENV_DIR="${INSTALL_DIR}/.venv"
 mkdir -p "${INSTALL_DIR}" "${CONFIG_DIR}"
 
 cp -a "${ROOT_DIR}/pi_avatar" "${INSTALL_DIR}/"
-cp "${ROOT_DIR}/status_agent.py" "${ROOT_DIR}/requirements.txt" "${INSTALL_DIR}/"
+cp "${ROOT_DIR}/status_agent.py" "${INSTALL_DIR}/"
 
 if ! python3 -m venv "${VENV_DIR}"; then
   if command -v apt-get >/dev/null 2>&1; then
@@ -29,9 +29,6 @@ if ! python3 -m venv "${VENV_DIR}"; then
     exit 1
   fi
 fi
-
-"${VENV_DIR}/bin/python" -m pip install --upgrade pip
-"${VENV_DIR}/bin/python" -m pip install -r "${INSTALL_DIR}/requirements.txt"
 
 if [ ! -f "${CONFIG_FILE}" ]; then
   cat > "${CONFIG_FILE}" <<'EOF'
