@@ -1,0 +1,16 @@
+[Unit]
+Description=Pi Avatar renderer
+After=local-fs.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/pi-avatar/avatar.env
+WorkingDirectory=/opt/pi-avatar
+ExecStart=/usr/bin/python3 /opt/pi-avatar/renderer.py
+Restart=always
+RestartSec=2
+StandardInput=tty
+TTYPath=/dev/tty1
+
+[Install]
+WantedBy=multi-user.target

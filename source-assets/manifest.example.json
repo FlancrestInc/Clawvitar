@@ -1,0 +1,26 @@
+{
+  "canvas": { "width": 800, "height": 480 },
+  "background": "background.png",
+  "states": {
+    "idle": {
+      "sheet": "idle.png",
+      "mode": "grid",
+      "frame_width": 128,
+      "frame_height": 128,
+      "columns": 8,
+      "frame_count": 8,
+      "position": { "x": 336, "y": 176 },
+      "scale": 2
+    },
+    "working": {
+      "sheet": "working.png",
+      "mode": "frames",
+      "frames": [
+        { "x": 0, "y": 0, "w": 120, "h": 140 },
+        { "x": 128, "y": 0, "w": 132, "h": 144 }
+      ],
+      "position": { "x": 330, "y": 170 },
+      "scale": 2
+    }
+  }
+}

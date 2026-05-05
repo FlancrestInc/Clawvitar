@@ -1,0 +1,314 @@
+import json
+import os
+import tempfile
+import time
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest import mock
+
+from pi_avatar import http_monitor
+from pi_avatar import openclaw_status
+from pi_avatar.constants import WORKING_CPU_THRESHOLD
+from pi_avatar.config import load_config
+from pi_avatar.state import StateWriter
+import renderer
+from PIL import Image
+from pi_avatar import assets as avatar_assets
+
+
+class MonitorTests(unittest.TestCase):
+    def setUp(self):
+        openclaw_status.last_error_time = 0
+        openclaw_status.last_success_time = 0
+        openclaw_status.last_thinking_time = 0
+
+    def test_write_state_updates_when_detail_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "state.json"
+            writer = StateWriter(state_file)
+
+            writer.write("working", "first command")
+            first = json.loads(state_file.read_text())
+
+            writer.write("working", "second command")
+            second = json.loads(state_file.read_text())
+
+        self.assertEqual(first["state"], "working")
+        self.assertEqual(second["state"], "working")
+        self.assertEqual(second["detail"], "second command")
+
+    def test_load_config_uses_portable_defaults(self):
+        config = load_config(env={})
+
+        self.assertEqual(config.state_file, Path("/var/lib/pi-avatar/state.json"))
+        self.assertEqual(config.asset_dir, Path("/opt/pi-avatar/assets"))
+        self.assertEqual(config.env_file, Path("/etc/pi-avatar/avatar.env"))
+
+    def test_load_config_allows_environment_overrides(self):
+        env = {
+            "STATE_FILE": "/tmp/avatar-state.json",
+            "ASSET_DIR": "/tmp/avatar-assets",
+            "STATUS_URL": "http://openclaw.example:18888/status",
+        }
+
+        config = load_config(env=env)
+
+        self.assertEqual(config.state_file, Path("/tmp/avatar-state.json"))
+        self.assertEqual(config.asset_dir, Path("/tmp/avatar-assets"))
+        self.assertEqual(config.status_url, "http://openclaw.example:18888/status")
+
+    def test_state_writer_skips_unchanged_payloads(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "state.json"
+            writer = StateWriter(state_file)
+
+            self.assertTrue(writer.write("idle", "ready"))
+            first_updated = json.loads(state_file.read_text())["updated"]
+
+            self.assertFalse(writer.write("idle", "ready"))
+            second_updated = json.loads(state_file.read_text())["updated"]
+
+        self.assertEqual(first_updated, second_updated)
+
+    def test_incremental_file_reader_returns_only_new_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_file = Path(tmpdir) / "runtime.log"
+            log_file.write_text("old line\n")
+
+            reader = openclaw_status.IncrementalFileReader(log_file)
+            self.assertEqual(reader.read_new(), "")
+
+            log_file.write_text("old line\nnew line\n")
+            self.assertEqual(reader.read_new(), "new line\n")
+            self.assertEqual(reader.read_new(), "")
+
+    def test_classify_new_logs_does_not_reuse_stale_error_lines(self):
+        with mock.patch.object(openclaw_status.time, "time", return_value=100.0):
+            state, detail = openclaw_status.classify_from_logs("error: failed pairing")
+
+        self.assertEqual(state, "error")
+        self.assertIn("error", detail.lower())
+
+        with mock.patch.object(openclaw_status.time, "time", return_value=200.0):
+            state, detail = openclaw_status.classify_from_logs("")
+
+        self.assertEqual(state, "idle")
+        self.assertIn("running", detail.lower())
+
+    def test_choose_state_gives_health_priority_over_activity(self):
+        state, detail = openclaw_status.choose_state(
+            health_state=("offline", "service stopped"),
+            log_state=("working", "tool call"),
+            cpu=99.0,
+        )
+
+        self.assertEqual(state, "offline")
+        self.assertEqual(detail, "service stopped")
+
+    def test_choose_state_uses_cpu_as_idle_fallback(self):
+        state, detail = openclaw_status.choose_state(
+            health_state=None,
+            log_state=("idle", "OpenClaw gateway is running"),
+            cpu=WORKING_CPU_THRESHOLD,
+        )
+
+        self.assertEqual(state, "working")
+        self.assertIn("CPU", detail)
+
+    def test_openclaw_status_builds_offline_payload_when_service_inactive(self):
+        with mock.patch.object(openclaw_status, "service_active", return_value=False):
+            payload = openclaw_status.build_status(load_config(env={}), cpu=0.0, logs="")
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["state"], "offline")
+        self.assertIn("service", payload)
+        self.assertFalse(payload["service"]["active"])
+
+    def test_openclaw_status_builds_error_payload_when_port_missing(self):
+        with (
+            mock.patch.object(openclaw_status, "service_active", return_value=True),
+            mock.patch.object(openclaw_status, "gateway_port_listening", return_value=False),
+            mock.patch.object(openclaw_status, "recent_config_audit_error", return_value=None),
+        ):
+            payload = openclaw_status.build_status(load_config(env={}), cpu=0.0, logs="")
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["state"], "error")
+        self.assertFalse(payload["service"]["port_listening"])
+
+    def test_openclaw_status_builds_working_payload_from_logs(self):
+        with (
+            mock.patch.object(openclaw_status, "service_active", return_value=True),
+            mock.patch.object(openclaw_status, "gateway_port_listening", return_value=True),
+            mock.patch.object(openclaw_status, "recent_config_audit_error", return_value=None),
+        ):
+            payload = openclaw_status.build_status(load_config(env={}), cpu=0.0, logs="calling tool")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["state"], "working")
+        self.assertEqual(payload["service"]["cpu_percent"], 0.0)
+
+    def test_http_status_to_state_accepts_fresh_known_state(self):
+        payload = {
+            "state": "success",
+            "detail": "done",
+            "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+        state, detail = http_monitor.status_to_state(
+            payload,
+            now=datetime.now(timezone.utc),
+            stale_seconds=15,
+        )
+
+        self.assertEqual(state, "success")
+        self.assertEqual(detail, "done")
+
+    def test_http_status_to_state_rejects_unknown_state(self):
+        payload = {
+            "state": "dancing",
+            "detail": "unknown",
+            "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+
+        state, detail = http_monitor.status_to_state(
+            payload,
+            now=datetime.now(timezone.utc),
+            stale_seconds=15,
+        )
+
+        self.assertEqual(state, "offline")
+        self.assertIn("Unknown", detail)
+
+    def test_http_status_to_state_rejects_stale_timestamp(self):
+        payload = {
+            "state": "working",
+            "detail": "old",
+            "updated": (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat(timespec="seconds"),
+        }
+
+        state, detail = http_monitor.status_to_state(
+            payload,
+            now=datetime.now(timezone.utc),
+            stale_seconds=15,
+        )
+
+        self.assertEqual(state, "offline")
+        self.assertIn("stale", detail.lower())
+
+    def test_fetch_status_rejects_invalid_json(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b"not json"
+
+        with mock.patch.object(http_monitor.request, "urlopen", return_value=FakeResponse()):
+            payload, error = http_monitor.fetch_status(load_config(env={}))
+
+        self.assertIsNone(payload)
+        self.assertIn("Invalid JSON", error)
+
+    def test_renderer_read_state_uses_configured_state_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "state.json"
+            state_file.write_text(json.dumps({"state": "thinking", "detail": "remote"}))
+            config = load_config(env={"STATE_FILE": str(state_file)})
+
+            state, detail = renderer.read_state(config)
+
+        self.assertEqual(state, "thinking")
+        self.assertEqual(detail, "remote")
+
+    def test_renderer_read_state_rejects_unknown_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "state.json"
+            state_file.write_text(json.dumps({"state": "surprised", "detail": "remote"}))
+            config = load_config(env={"STATE_FILE": str(state_file)})
+
+            state, detail = renderer.read_state(config)
+
+        self.assertEqual(state, "idle")
+        self.assertEqual(detail, "Unknown state")
+
+    def test_process_assets_extracts_grid_frames_to_full_canvas(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source"
+            output = Path(tmpdir) / "assets"
+            source.mkdir()
+
+            Image.new("RGB", (4, 4), (10, 20, 30)).save(source / "background.png")
+            sheet = Image.new("RGBA", (4, 2), (0, 0, 0, 0))
+            sheet.paste((255, 0, 0, 255), (0, 0, 2, 2))
+            sheet.paste((0, 255, 0, 255), (2, 0, 4, 2))
+            sheet.save(source / "idle.png")
+
+            manifest = {
+                "canvas": {"width": 4, "height": 4},
+                "background": "background.png",
+                "states": {
+                    "idle": {
+                        "sheet": "idle.png",
+                        "mode": "grid",
+                        "frame_width": 2,
+                        "frame_height": 2,
+                        "columns": 2,
+                        "frame_count": 2,
+                        "position": {"x": 1, "y": 1},
+                    }
+                },
+            }
+
+            avatar_assets.process_manifest(manifest, source, output)
+
+            first = Image.open(output / "idle" / "00.png")
+            second = Image.open(output / "idle" / "01.png")
+
+        self.assertEqual(first.size, (4, 4))
+        self.assertEqual(first.getpixel((1, 1))[:3], (255, 0, 0))
+        self.assertEqual(second.getpixel((1, 1))[:3], (0, 255, 0))
+
+    def test_process_assets_extracts_explicit_variable_frames(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source"
+            output = Path(tmpdir) / "assets"
+            source.mkdir()
+
+            Image.new("RGB", (5, 5), (1, 2, 3)).save(source / "background.png")
+            sheet = Image.new("RGBA", (5, 3), (0, 0, 0, 0))
+            sheet.paste((0, 0, 255, 255), (0, 0, 1, 1))
+            sheet.paste((255, 255, 0, 255), (1, 0, 4, 3))
+            sheet.save(source / "working.png")
+
+            manifest = {
+                "canvas": {"width": 5, "height": 5},
+                "background": "background.png",
+                "states": {
+                    "working": {
+                        "sheet": "working.png",
+                        "mode": "frames",
+                        "frames": [
+                            {"x": 0, "y": 0, "w": 1, "h": 1},
+                            {"x": 1, "y": 0, "w": 3, "h": 3},
+                        ],
+                        "position": {"x": 1, "y": 1},
+                    }
+                },
+            }
+
+            avatar_assets.process_manifest(manifest, source, output)
+
+            first = Image.open(output / "working" / "00.png")
+            second = Image.open(output / "working" / "01.png")
+
+        self.assertEqual(first.getpixel((1, 1))[:3], (0, 0, 255))
+        self.assertEqual(second.getpixel((3, 3))[:3], (255, 255, 0))
+
+
+if __name__ == "__main__":
+    unittest.main()

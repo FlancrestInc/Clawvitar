@@ -1,0 +1,1 @@
+"""Pi Avatar service package."""
