@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=-/etc/pi-avatar/avatar.env
 WorkingDirectory=/opt/pi-avatar
-ExecStart=/usr/bin/python3 /opt/pi-avatar/status_agent.py
+ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/status_agent.py
 Restart=always
 RestartSec=2
 

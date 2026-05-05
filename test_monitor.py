@@ -323,6 +323,15 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/monitor.py", monitor_service)
         self.assertIn("ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/renderer.py", renderer_service)
 
+    def test_openclaw_installer_uses_virtual_environment_for_dependencies_and_service(self):
+        installer = (REPO_ROOT / "scripts" / "install-openclaw-status-agent.sh").read_text()
+        service = (REPO_ROOT / "systemd" / "openclaw-avatar-status.service").read_text()
+
+        self.assertIn("VENV_DIR=", installer)
+        self.assertIn("python3 -m venv", installer)
+        self.assertIn('"${VENV_DIR}/bin/python" -m pip install', installer)
+        self.assertIn("ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/status_agent.py", service)
+
 
 if __name__ == "__main__":
     unittest.main()
