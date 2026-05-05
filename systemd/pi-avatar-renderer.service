@@ -5,10 +5,13 @@ After=local-fs.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/pi-avatar/avatar.env
+Environment=XDG_RUNTIME_DIR=/run/pi-avatar
 WorkingDirectory=/opt/pi-avatar
 ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/renderer.py
 Restart=always
 RestartSec=2
+RuntimeDirectory=pi-avatar
+RuntimeDirectoryMode=0700
 StandardInput=tty
 TTYPath=/dev/tty1
 

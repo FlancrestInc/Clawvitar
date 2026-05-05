@@ -322,6 +322,9 @@ class MonitorTests(unittest.TestCase):
         self.assertIn('"${VENV_DIR}/bin/python" -m pip install', installer)
         self.assertIn("ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/monitor.py", monitor_service)
         self.assertIn("ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/renderer.py", renderer_service)
+        self.assertIn("RuntimeDirectory=pi-avatar", renderer_service)
+        self.assertIn("RuntimeDirectoryMode=0700", renderer_service)
+        self.assertIn("Environment=XDG_RUNTIME_DIR=/run/pi-avatar", renderer_service)
 
     def test_openclaw_installer_uses_virtual_environment_for_dependencies_and_service(self):
         installer = (REPO_ROOT / "scripts" / "install-openclaw-status-agent.sh").read_text()
