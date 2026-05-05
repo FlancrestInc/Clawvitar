@@ -69,13 +69,19 @@ def hide_mouse():
         pass
 
 
-def main():
-    import pygame
+def configure_sdl_environment(env):
+    env.setdefault("SDL_FBDEV", "/dev/fb0")
 
+    if not env.get("DISPLAY") and not env.get("WAYLAND_DISPLAY"):
+        env.setdefault("SDL_VIDEODRIVER", "kmsdrm")
+
+
+def main():
     config = load_config(os.environ)
 
-    # Let SDL choose the best available display backend unless you override it.
-    os.environ.setdefault("SDL_FBDEV", "/dev/fb0")
+    configure_sdl_environment(os.environ)
+
+    import pygame
 
     pygame.init()
     pygame.display.set_caption("Pi Avatar")

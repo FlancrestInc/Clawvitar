@@ -239,6 +239,28 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(state, "idle")
         self.assertEqual(detail, "Unknown state")
 
+    def test_renderer_defaults_to_kmsdrm_without_desktop_display(self):
+        env = {}
+
+        renderer.configure_sdl_environment(env)
+
+        self.assertEqual(env["SDL_FBDEV"], "/dev/fb0")
+        self.assertEqual(env["SDL_VIDEODRIVER"], "kmsdrm")
+
+    def test_renderer_preserves_explicit_sdl_video_driver(self):
+        env = {"SDL_VIDEODRIVER": "dummy"}
+
+        renderer.configure_sdl_environment(env)
+
+        self.assertEqual(env["SDL_VIDEODRIVER"], "dummy")
+
+    def test_renderer_leaves_desktop_video_driver_selection_to_sdl(self):
+        env = {"DISPLAY": ":0"}
+
+        renderer.configure_sdl_environment(env)
+
+        self.assertNotIn("SDL_VIDEODRIVER", env)
+
     def test_process_assets_extracts_grid_frames_to_full_canvas(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source = Path(tmpdir) / "source"
@@ -325,6 +347,7 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("RuntimeDirectory=pi-avatar", renderer_service)
         self.assertIn("RuntimeDirectoryMode=0700", renderer_service)
         self.assertIn("Environment=XDG_RUNTIME_DIR=/run/pi-avatar", renderer_service)
+        self.assertIn("Environment=SDL_VIDEODRIVER=kmsdrm", renderer_service)
 
     def test_openclaw_installer_uses_virtual_environment_for_dependencies_and_service(self):
         installer = (REPO_ROOT / "scripts" / "install-openclaw-status-agent.sh").read_text()
