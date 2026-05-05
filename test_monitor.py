@@ -17,6 +17,9 @@ from PIL import Image
 from pi_avatar import assets as avatar_assets
 
 
+REPO_ROOT = Path(__file__).resolve().parent
+
+
 class MonitorTests(unittest.TestCase):
     def setUp(self):
         openclaw_status.last_error_time = 0
@@ -308,6 +311,17 @@ class MonitorTests(unittest.TestCase):
 
         self.assertEqual(first.getpixel((1, 1))[:3], (0, 0, 255))
         self.assertEqual(second.getpixel((3, 3))[:3], (255, 255, 0))
+
+    def test_pi_installer_uses_virtual_environment_for_dependencies_and_services(self):
+        installer = (REPO_ROOT / "scripts" / "install-pi.sh").read_text()
+        monitor_service = (REPO_ROOT / "systemd" / "pi-avatar-monitor.service").read_text()
+        renderer_service = (REPO_ROOT / "systemd" / "pi-avatar-renderer.service").read_text()
+
+        self.assertIn("VENV_DIR=", installer)
+        self.assertIn("python3 -m venv", installer)
+        self.assertIn('"${VENV_DIR}/bin/python" -m pip install', installer)
+        self.assertIn("ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/monitor.py", monitor_service)
+        self.assertIn("ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/renderer.py", renderer_service)
 
 
 if __name__ == "__main__":
