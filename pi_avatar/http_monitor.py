@@ -1,10 +1,37 @@
 import json
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib import error, request
 
 from .constants import FAST_POLL_SECONDS, VALID_STATES
 from .state import StateWriter
+
+
+@dataclass(frozen=True)
+class PollResult:
+    health: str
+    state: str
+    message: str
+
+
+class TransitionLogger:
+    def __init__(self, log_func=None):
+        self.log_func = log_func or self._print
+        self.last_key = None
+
+    @staticmethod
+    def _print(message):
+        print(message, flush=True)
+
+    def log_if_changed(self, result):
+        key = (result.health, result.state, result.message)
+        if key == self.last_key:
+            return False
+
+        self.log_func(result.message)
+        self.last_key = key
+        return True
 
 
 def fetch_status(config):
@@ -55,9 +82,36 @@ def status_to_state(payload, now=None, stale_seconds=15):
     return state, detail
 
 
-def poll_once(config, writer=None):
+def describe_poll_result(config, payload, error_message):
+    if payload is None:
+        return PollResult(
+            health="offline",
+            state="offline",
+            message=f"offline: {error_message or 'Status feed unavailable'} ({config.status_url})",
+        )
+
+    state, detail = status_to_state(
+        payload,
+        now=datetime.now(timezone.utc),
+        stale_seconds=config.stale_status_seconds,
+    )
+    health = "connected" if state != "offline" else "offline"
+    detail_suffix = f": {detail}" if detail else ""
+
+    return PollResult(
+        health=health,
+        state=state,
+        message=f"{health}: {config.status_url} -> {state}{detail_suffix}",
+    )
+
+
+def poll_once(config, writer=None, transition_logger=None):
     writer = writer or StateWriter(config.state_file)
     payload, error_message = fetch_status(config)
+    result = describe_poll_result(config, payload, error_message)
+
+    if transition_logger:
+        transition_logger.log_if_changed(result)
 
     if payload is None:
         return writer.write("offline", error_message or "Status feed unavailable")
@@ -72,8 +126,10 @@ def poll_once(config, writer=None):
 
 def run_monitor(config):
     writer = StateWriter(config.state_file)
+    transition_logger = TransitionLogger()
     writer.write("booting", "Avatar monitor starting")
+    print(f"monitor starting: polling {config.status_url}", flush=True)
 
     while True:
-        poll_once(config, writer)
+        poll_once(config, writer, transition_logger)
         time.sleep(FAST_POLL_SECONDS)

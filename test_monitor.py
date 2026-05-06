@@ -7,13 +7,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from PIL import Image
 from pi_avatar import http_monitor
 from pi_avatar import openclaw_status
 from pi_avatar.constants import WORKING_CPU_THRESHOLD
 from pi_avatar.config import load_config
 from pi_avatar.state import StateWriter
 import renderer
-from PIL import Image
 from pi_avatar import assets as avatar_assets
 
 
@@ -152,6 +152,43 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(payload["state"], "working")
         self.assertEqual(payload["service"]["cpu_percent"], 0.0)
 
+    def test_openclaw_describe_payload_reports_service_health(self):
+        payload = {
+            "ok": True,
+            "state": "idle",
+            "detail": "OpenClaw gateway is running",
+            "service": {
+                "active": True,
+                "port_listening": True,
+                "cpu_percent": 2.5,
+            },
+        }
+
+        result = openclaw_status.describe_status_payload(payload)
+
+        self.assertEqual(result.health, "ok")
+        self.assertEqual(result.state, "idle")
+        self.assertIn("active=True", result.message)
+        self.assertIn("port_listening=True", result.message)
+        self.assertIn("cpu=2.5%", result.message)
+
+    def test_status_sampler_logs_only_when_payload_status_changes(self):
+        config = load_config(env={})
+        output = []
+
+        with (
+            mock.patch.object(openclaw_status, "IncrementalFileReader", return_value=mock.Mock(read_new=lambda: "")),
+            mock.patch.object(openclaw_status, "JournalFollower", return_value=mock.Mock(read_new=lambda: "", close=lambda: None)),
+            mock.patch.object(openclaw_status, "check_health", return_value=(None, True, True)),
+            mock.patch.object(openclaw_status, "get_openclaw_cpu_percent", return_value=0.0),
+        ):
+            sampler = openclaw_status.StatusSampler(config, log_func=output.append)
+            sampler.sample()
+            sampler.sample()
+
+        self.assertEqual(len(output), 1)
+        self.assertIn("status: ok", output[0])
+
     def test_http_status_to_state_accepts_fresh_known_state(self):
         payload = {
             "state": "success",
@@ -217,6 +254,39 @@ class MonitorTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("Invalid JSON", error)
 
+    def test_describe_poll_result_reports_connected_status_url(self):
+        payload = {
+            "state": "working",
+            "detail": "tool call",
+            "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        config = load_config(env={"STATUS_URL": "http://server.example/status"})
+
+        result = http_monitor.describe_poll_result(config, payload=payload, error_message=None)
+
+        self.assertEqual(result.health, "connected")
+        self.assertEqual(result.state, "working")
+        self.assertIn("http://server.example/status", result.message)
+        self.assertIn("tool call", result.message)
+
+    def test_describe_poll_result_reports_fetch_error(self):
+        config = load_config(env={"STATUS_URL": "http://server.example/status"})
+
+        result = http_monitor.describe_poll_result(config, payload=None, error_message="Status feed unavailable")
+
+        self.assertEqual(result.health, "offline")
+        self.assertEqual(result.state, "offline")
+        self.assertIn("Status feed unavailable", result.message)
+
+    def test_transition_logger_logs_only_when_status_changes(self):
+        output = []
+        logger = http_monitor.TransitionLogger(output.append)
+        result = http_monitor.PollResult("connected", "idle", "connected to server")
+
+        self.assertTrue(logger.log_if_changed(result))
+        self.assertFalse(logger.log_if_changed(result))
+        self.assertEqual(output, ["connected to server"])
+
     def test_renderer_read_state_uses_configured_state_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = Path(tmpdir) / "state.json"
@@ -260,6 +330,42 @@ class MonitorTests(unittest.TestCase):
         renderer.configure_sdl_environment(env)
 
         self.assertNotIn("SDL_VIDEODRIVER", env)
+
+    def test_pack_framebuffer_image_uses_framebuffer_bitfields(self):
+        image = Image.new("RGB", (2, 1))
+        image.putpixel((0, 0), (255, 0, 0))
+        image.putpixel((1, 0), (0, 0, 255))
+        info = renderer.FramebufferInfo(
+            width=2,
+            height=1,
+            bits_per_pixel=32,
+            line_length=8,
+            red=renderer.BitField(offset=16, length=8),
+            green=renderer.BitField(offset=8, length=8),
+            blue=renderer.BitField(offset=0, length=8),
+            transp=renderer.BitField(offset=24, length=8),
+        )
+
+        packed = renderer.pack_framebuffer_image(image, info)
+
+        self.assertEqual(packed, b"\x00\x00\xff\x00\xff\x00\x00\x00")
+
+    def test_pack_framebuffer_image_respects_line_padding(self):
+        image = Image.new("RGB", (1, 2), (255, 255, 255))
+        info = renderer.FramebufferInfo(
+            width=1,
+            height=2,
+            bits_per_pixel=16,
+            line_length=4,
+            red=renderer.BitField(offset=11, length=5),
+            green=renderer.BitField(offset=5, length=6),
+            blue=renderer.BitField(offset=0, length=5),
+            transp=renderer.BitField(offset=0, length=0),
+        )
+
+        packed = renderer.pack_framebuffer_image(image, info)
+
+        self.assertEqual(packed, b"\xff\xff\x00\x00\xff\xff\x00\x00")
 
     def test_process_assets_extracts_grid_frames_to_full_canvas(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -348,6 +454,8 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("RuntimeDirectoryMode=0700", renderer_service)
         self.assertIn("Environment=XDG_RUNTIME_DIR=/run/pi-avatar", renderer_service)
         self.assertIn("Environment=SDL_VIDEODRIVER=kmsdrm", renderer_service)
+        self.assertIn("ExecStartPre=/bin/sh -c '/usr/bin/setterm --cursor off --blank 0 --powerdown 0 > /dev/tty1'", renderer_service)
+        self.assertIn("ExecStopPost=/bin/sh -c '/usr/bin/setterm --cursor on > /dev/tty1'", renderer_service)
 
     def test_openclaw_installer_uses_virtual_environment_for_dependencies_and_service(self):
         installer = (REPO_ROOT / "scripts" / "install-openclaw-status-agent.sh").read_text()

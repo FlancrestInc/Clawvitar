@@ -8,7 +8,9 @@ EnvironmentFile=-/etc/pi-avatar/avatar.env
 Environment=XDG_RUNTIME_DIR=/run/pi-avatar
 Environment=SDL_VIDEODRIVER=kmsdrm
 WorkingDirectory=/opt/pi-avatar
+ExecStartPre=/bin/sh -c '/usr/bin/setterm --cursor off --blank 0 --powerdown 0 > /dev/tty1'
 ExecStart=/opt/pi-avatar/.venv/bin/python /opt/pi-avatar/renderer.py
+ExecStopPost=/bin/sh -c '/usr/bin/setterm --cursor on > /dev/tty1'
 Restart=always
 RestartSec=2
 RuntimeDirectory=pi-avatar

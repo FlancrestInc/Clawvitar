@@ -3,6 +3,7 @@ import os
 import select
 import subprocess
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +23,32 @@ from .state import now_iso
 last_error_time = 0
 last_success_time = 0
 last_thinking_time = 0
+
+
+@dataclass(frozen=True)
+class StatusDescription:
+    health: str
+    state: str
+    message: str
+
+
+class TransitionLogger:
+    def __init__(self, log_func=None):
+        self.log_func = log_func or self._print
+        self.last_key = None
+
+    @staticmethod
+    def _print(message):
+        print(message, flush=True)
+
+    def log_if_changed(self, description):
+        key = (description.health, description.state, description.message)
+        if key == self.last_key:
+            return False
+
+        self.log_func(description.message)
+        self.last_key = key
+        return True
 
 
 def run_command(args, timeout=5):
@@ -449,11 +476,32 @@ def build_status(config, cpu=None, logs=None):
     }
 
 
+def describe_status_payload(payload):
+    service = payload.get("service", {})
+    health = "ok" if payload.get("ok") else "not-ok"
+    state = payload.get("state", "unknown")
+    detail = payload.get("detail", "")
+    active = service.get("active")
+    port_listening = service.get("port_listening")
+    cpu = float(service.get("cpu_percent") or 0.0)
+
+    detail_suffix = f": {detail}" if detail else ""
+    return StatusDescription(
+        health=health,
+        state=state,
+        message=(
+            f"status: {health} -> {state}{detail_suffix} "
+            f"(active={active}, port_listening={port_listening}, cpu={cpu:.1f}%)"
+        ),
+    )
+
+
 class StatusSampler:
-    def __init__(self, config):
+    def __init__(self, config, log_func=None):
         self.config = config
         self.runtime_reader = IncrementalFileReader(config.runtime_log)
         self.journal_follower = JournalFollower(config.openclaw_service)
+        self.transition_logger = TransitionLogger(log_func)
         self.health_state = None
         self.active = False
         self.port_listening = False
@@ -476,7 +524,7 @@ class StatusSampler:
         logs = read_new_logs(self.runtime_reader, self.journal_follower)
         state, detail = choose_state(self.health_state, classify_from_logs(logs), self.cpu)
 
-        return {
+        payload = {
             "ok": state not in ("offline", "error"),
             "state": state,
             "detail": detail,
@@ -487,6 +535,8 @@ class StatusSampler:
                 "cpu_percent": float(self.cpu),
             },
         }
+        self.transition_logger.log_if_changed(describe_status_payload(payload))
+        return payload
 
     def close(self):
         self.journal_follower.close()

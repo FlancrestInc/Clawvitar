@@ -42,6 +42,15 @@ def main():
         (config.status_bind_host, config.status_bind_port),
         make_handler(sampler),
     )
+    print(
+        f"status agent listening on {config.status_bind_host}:{config.status_bind_port} "
+        f"for {config.openclaw_service} port {config.openclaw_port}",
+        flush=True,
+    )
+    print(
+        f"watching runtime log {config.runtime_log} and audit log {config.config_audit_log}",
+        flush=True,
+    )
 
     try:
         server.serve_forever()
