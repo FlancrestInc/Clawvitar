@@ -423,10 +423,12 @@ def classify_from_logs(logs):
 
 
 def check_health(config):
-    if not service_active(config):
-        return ("offline", f"{config.openclaw_service} is not active"), False, False
-
+    active = service_active(config)
     port_listening = gateway_port_listening(config)
+
+    if not active and not port_listening:
+        return ("offline", f"{config.openclaw_service} is not active and port {config.openclaw_port} is not listening"), False, False
+
     if not port_listening:
         return ("error", f"OpenClaw service active, but port {config.openclaw_port} is not listening"), True, False
 
@@ -434,7 +436,7 @@ def check_health(config):
     if config_error:
         return ("error", config_error), True, True
 
-    return None, True, True
+    return None, active or port_listening, True
 
 
 def choose_state(health_state, log_state, cpu):

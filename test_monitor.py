@@ -120,13 +120,29 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("CPU", detail)
 
     def test_openclaw_status_builds_offline_payload_when_service_inactive(self):
-        with mock.patch.object(openclaw_status, "service_active", return_value=False):
+        with (
+            mock.patch.object(openclaw_status, "service_active", return_value=False),
+            mock.patch.object(openclaw_status, "gateway_port_listening", return_value=False),
+        ):
             payload = openclaw_status.build_status(load_config(env={}), cpu=0.0, logs="")
 
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["state"], "offline")
         self.assertIn("service", payload)
         self.assertFalse(payload["service"]["active"])
+
+    def test_openclaw_status_treats_listening_gateway_port_as_active(self):
+        with (
+            mock.patch.object(openclaw_status, "service_active", return_value=False),
+            mock.patch.object(openclaw_status, "gateway_port_listening", return_value=True),
+            mock.patch.object(openclaw_status, "recent_config_audit_error", return_value=None),
+        ):
+            payload = openclaw_status.build_status(load_config(env={}), cpu=0.0, logs="")
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["state"], "idle")
+        self.assertTrue(payload["service"]["active"])
+        self.assertTrue(payload["service"]["port_listening"])
 
     def test_openclaw_status_builds_error_payload_when_port_missing(self):
         with (
