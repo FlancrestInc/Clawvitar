@@ -214,6 +214,27 @@ def get_service_main_pid(config):
     return raw
 
 
+def get_gateway_port_pid(config):
+    result = run_command(["ss", "-ltnp"], timeout=5)
+
+    if result is None or result.returncode != 0:
+        return None
+
+    port_token = f":{config.openclaw_port}"
+    for line in result.stdout.splitlines():
+        if port_token not in line:
+            continue
+
+        marker = "pid="
+        if marker not in line:
+            return None
+
+        pid = line.split(marker, 1)[1].split(",", 1)[0].strip()
+        return pid or None
+
+    return None
+
+
 def get_process_tree_pids(root_pid):
     if not root_pid:
         return []
@@ -232,7 +253,7 @@ def get_process_tree_pids(root_pid):
 
 
 def get_openclaw_cpu_percent(config):
-    root_pid = get_service_main_pid(config)
+    root_pid = get_service_main_pid(config) or get_gateway_port_pid(config)
     pids = get_process_tree_pids(root_pid)
 
     if not pids:

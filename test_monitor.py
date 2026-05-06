@@ -74,6 +74,27 @@ class MonitorTests(unittest.TestCase):
 
         self.assertEqual(first_updated, second_updated)
 
+    def test_state_writer_refreshes_unchanged_payload_after_heartbeat_interval(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "state.json"
+            writer = StateWriter(state_file, unchanged_write_seconds=5)
+
+            with (
+                mock.patch("pi_avatar.state.time.time", return_value=100),
+                mock.patch("pi_avatar.state.now_iso", return_value="first"),
+            ):
+                self.assertTrue(writer.write("idle", "ready"))
+                first_updated = json.loads(state_file.read_text())["updated"]
+
+            with (
+                mock.patch("pi_avatar.state.time.time", return_value=106),
+                mock.patch("pi_avatar.state.now_iso", return_value="second"),
+            ):
+                self.assertTrue(writer.write("idle", "ready"))
+                second_updated = json.loads(state_file.read_text())["updated"]
+
+        self.assertNotEqual(first_updated, second_updated)
+
     def test_incremental_file_reader_returns_only_new_content(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             log_file = Path(tmpdir) / "runtime.log"
@@ -143,6 +164,19 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(payload["state"], "idle")
         self.assertTrue(payload["service"]["active"])
         self.assertTrue(payload["service"]["port_listening"])
+
+    def test_openclaw_cpu_uses_port_owner_when_service_pid_is_unavailable(self):
+        config = load_config(env={"OPENCLAW_PORT": "18789"})
+
+        with (
+            mock.patch.object(openclaw_status, "get_service_main_pid", return_value=None),
+            mock.patch.object(openclaw_status, "get_gateway_port_pid", return_value="123"),
+            mock.patch.object(openclaw_status, "get_process_tree_pids", return_value=["123", "124"]),
+            mock.patch.object(openclaw_status, "run_command", return_value=mock.Mock(returncode=0, stdout=" 7.5\n 6.0\n")),
+        ):
+            cpu = openclaw_status.get_openclaw_cpu_percent(config)
+
+        self.assertEqual(cpu, 13.5)
 
     def test_openclaw_status_builds_error_payload_when_port_missing(self):
         with (
